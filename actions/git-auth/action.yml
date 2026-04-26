@@ -1,0 +1,88 @@
+---
+name: 🔐 Git Auth
+description: >
+  Sets up Git identity and token-based URL authentication for pushing.
+  Compatible with actions/checkout v4–v6. Callers must add their own
+  `if: always()` cleanup step to restore the original remote URL.
+inputs:
+  GH_TOKEN:
+    description: GitHub token for authentication
+    required: true
+  REPO:
+    description: Repository in owner/repo format (defaults to current repo)
+    required: false
+    default: ${{ github.repository }}
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Git & Auth
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.GH_TOKEN }}
+        REPO: ${{ inputs.REPO }}
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        # 🛡️ Auth Strategy: http.extraheader with base64 Basic Auth
+        #
+        # We use `http.https://github.com/.extraheader` to inject a Basic Auth
+        # header derived from the GitHub token. This is preferred over embedding
+        # the token directly in the remote URL because:
+        # - The header is scoped to http.https://github.com/ and doesn't leak to
+        #   other remotes or submodule fetches
+        # - `::add-mask::` redacts the base64 value from all subsequent logs
+        # - The credential is stored in git config (--local scope), not in the
+        #   remote URL visible in `git remote -v` output
+        #
+        # To prevent the checkout-injected auth from conflicting, we neutralize ALL
+        # known auth sources (extraheader, credential.helper, includeIf) before
+        # setting our own extraheader.
+
+        # 1. Clear extraheader at all scopes (checkout v4/v5)
+        git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+        git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+        # 2. Clear credential helpers (checkout v4/v5)
+        git config --global --unset-all credential.helper 2>/dev/null || true
+        git config --local --unset-all credential.helper 2>/dev/null || true
+
+        # 3. Remove includeIf directives injected by checkout v6
+        #    These reference external config files in $RUNNER_TEMP with auth credentials
+        git config --local --get-regexp 'includeIf\..*\.path' 2>/dev/null | while IFS= read -r line; do
+          key="${line%% *}"
+          echo "🧹 Removing checkout v6 includeIf: $key"
+          git config --local --unset "$key" 2>/dev/null || true
+        done
+
+        # 4. Set git auth correctly via extraheader instead of embedding token in URL
+        B64_TOKEN=$(echo -n "x-access-token:${GH_TOKEN}" | base64 | tr -d '\n')
+        echo "::add-mask::$B64_TOKEN"
+        git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $B64_TOKEN"
+        git remote set-url origin "https://github.com/${REPO}.git"
+
+        # ╔═══════════════════════════════════════════════════════════════════╗
+        # ║ ⚠️  SECURITY: CLEANUP REQUIRED BY CALLER                         ║
+        # ║                                                                    ║
+        # ║ The auth token is stored in git config (http.extraheader) and      ║
+        # ║ persists until explicitly removed. Callers MUST add a cleanup      ║
+        # ║ step with `if: always()` to prevent token leakage on               ║
+        # ║ failure/cancellation.                                              ║
+        # ║                                                                    ║
+        # ║ Required cleanup step (copy-paste into your action):               ║
+        # ║                                                                    ║
+        # ║   - name: Cleanup Git auth                                         ║
+        # ║     if: always()                                                   ║
+        # ║     shell: bash                                                    ║
+        # ║     run: |                                                         ║
+        # ║       git config --global --unset-all \                            ║
+        # ║         http.https://github.com/.extraheader 2>/dev/null || true   ║
+        # ║       git config --local --unset-all \                             ║
+        # ║         http.https://github.com/.extraheader 2>/dev/null || true   ║
+        # ║       git remote set-url origin \                                  ║
+        # ║         "https://github.com/${{ github.repository }}.git"          ║
+        # ║                                                                    ║
+        # ║ Do NOT use `trap` here — it fires when this step's shell           ║
+        # ║ exits, removing the token before subsequent steps can use it.      ║
+        # ╚═══════════════════════════════════════════════════════════════════╝

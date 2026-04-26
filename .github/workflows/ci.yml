@@ -1,0 +1,390 @@
+---
+name: CI - Validate Actions
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths-ignore:
+      - '**/*.md'
+      - '.agent/**'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Lint YAML
+        uses: ./actions/lint-yaml
+
+      - name: Run unified linters
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/cli.py lint-all
+
+      - name: Verify generated docs & graphs are up-to-date
+        shell: bash
+        run: python3 scripts/cli.py generate-verify
+
+  validate-actions:
+    name: Validate Action Schemas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install actionlint
+        shell: bash
+        run: |
+          # renovate: datasource=go depName=github.com/rhysd/actionlint
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Lint GitHub Actions
+        shell: bash
+        run: actionlint -color
+
+  pin-checker:
+    name: Verify SHA Pinning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check all uses are SHA-pinned
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Single-pass: find all 'uses:' lines, exclude local and org-internal refs, check for SHA pinning
+          ERRORS=$(find . -name '*.yml' -o -name '*.yaml' \
+            | grep -v node_modules | grep -v '^\./\.git/' \
+            | grep -v 'workflow-templates' \
+            | xargs grep -hnE '^\s*uses:' 2>/dev/null \
+            | grep -v 'uses:\s*\./' \
+            | grep -v 'uses:\s*cyberskill-official/\.github/' \
+            | grep -vE 'uses:\s*[^@]+@[0-9a-f]{40}' \
+            || true)
+
+          if [ -n "$ERRORS" ]; then
+            echo "$ERRORS" | while IFS= read -r line; do
+              echo "::error::Unpinned action: $line"
+            done
+            echo "::error::Found unpinned action reference(s). All 'uses:' must be pinned to full commit SHAs."
+            exit 1
+          fi
+          echo "✅ All action references are SHA-pinned."
+
+  breaking-change-guard:
+    name: Detect Breaking Input Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout base branch for comparison
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: actions/
+
+      - name: Compare action input schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          BREAKING=0
+          for base_file in base/actions/*/action.yml; do
+            # ⚡ Bolt: Replace expensive basename/dirname subprocesses with native Bash parameter expansion
+            dir="${base_file%/*}"
+            action_name="${dir##*/}"
+            pr_file="actions/$action_name/action.yml"
+            if [ ! -f "$pr_file" ]; then
+              echo "::warning::Action '$action_name' was deleted in this PR"
+              BREAKING=$((BREAKING + 1))
+              continue
+            fi
+            if ! python3 scripts/cli.py check-breaking "$base_file" "$pr_file"; then
+              echo "::error::Action '$action_name' has breaking input changes (removed or newly-required inputs)"
+              BREAKING=$((BREAKING + 1))
+            fi
+          done
+          if [ "$BREAKING" -gt 0 ]; then
+            echo "::error::Found $BREAKING potential breaking change(s). Add 'breaking-change-approved' label to override."
+            # Check for override label
+            if [ -n "${GITHUB_EVENT_PATH:-}" ]; then
+              LABELS=$(jq -r '[.pull_request.labels[].name] | join(" ")' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
+              if echo "$LABELS" | grep -q "breaking-change-approved"; then
+                echo "✅ Breaking change approved via label."
+                exit 0
+              fi
+            fi
+            exit 1
+          fi
+          echo "✅ No breaking input changes detected."
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48  # v4.9.0
+
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run Gitleaks via Docker
+        shell: bash
+        run: |
+          # renovate: datasource=docker depName=ghcr.io/gitleaks/gitleaks
+          # v8.30.1, pinned by digest
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" -w /work \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source . -v
+
+  git-auth-cleanup:
+    name: Verify Git Auth Cleanup Steps
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check all git-auth consumers have cleanup steps
+        shell: bash
+        run: |
+          set -euo pipefail
+          ERRORS=0
+          for file in actions/*/action.yml; do
+            # ⚡ Bolt: Replace expensive basename/dirname subprocesses with native Bash parameter expansion
+            dir="${file%/*}"
+            action_name="${dir##*/}"
+            # Skip git-auth itself — it IS the auth provider, not a consumer
+            if [ "$action_name" = "git-auth" ]; then continue; fi
+            # Check if this action uses git-auth
+            if grep -q 'git-auth' "$file"; then
+              # Check if it has a cleanup step with if: always()
+              if ! grep -q 'if: always()' "$file"; then
+                echo "::error::Action '$action_name' uses git-auth but has no 'if: always()' cleanup step"
+                ERRORS=$((ERRORS + 1))
+              fi
+              # Check if cleanup unsets the extraheader
+              if ! grep -Eq 'git config .*--unset-all .*http\.https://github\.com/\.extraheader' "$file"; then
+                echo "::error::Action '$action_name' uses git-auth but does not unset http.extraheader in cleanup"
+                ERRORS=$((ERRORS + 1))
+              fi
+            fi
+          done
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::Found $ERRORS git-auth cleanup issue(s). Actions using git-auth must include an 'if: always()' step that unsets the http.extraheader."
+            exit 1
+          fi
+          echo "✅ All git-auth consumers have proper cleanup steps."
+
+  python-tests:
+    name: Python Script Tests (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12', '3.14']
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '${{ matrix.python-version }}'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: bash
+        run: pip install -r scripts/requirements.txt
+
+      - name: Cache pipx tools
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: ~/.cache/pipx
+          key: pipx-${{ runner.os }}-ruff-0.15.8-yamllint-1.38.0
+
+      - name: Lint Python scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # renovate: datasource=pypi depName=ruff
+          pipx run ruff==0.15.8 check scripts/ --output-format=github
+
+      - name: Check Python formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          # renovate: datasource=pypi depName=ruff
+          pipx run ruff==0.15.8 format --check scripts/
+
+      - name: Verify requirements.txt hashes are in sync
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          input_file=""
+          input_hint=""
+          if [[ -f scripts/requirements.in ]]; then
+            input_file="scripts/requirements.in"
+            input_hint="scripts/requirements.in"
+          elif [[ -f pyproject.toml ]] && grep -Eq '^\[(project\.(dependencies|optional-dependencies)|dependency-groups)\]' pyproject.toml; then
+            input_file="pyproject.toml"
+            input_hint="pyproject.toml"
+          else
+            echo "ℹ️  No canonical dependency input found for scripts/requirements.txt. Skipping hash drift check."
+            exit 0
+          fi
+
+          # renovate: datasource=pypi depName=pip-tools
+          if ! pipx run --spec pip-tools==7.4.1 pip-compile --generate-hashes --output-file=/tmp/expected-requirements.txt "${input_file}"; then
+            echo "::error::pip-compile failed for ${input_hint}. Ensure it is a valid canonical input for scripts/requirements.txt."
+            exit 1
+          fi
+
+          if ! diff -u scripts/requirements.txt /tmp/expected-requirements.txt; then
+            echo "::error::scripts/requirements.txt is out of sync. Run 'pip-compile --generate-hashes -o scripts/requirements.txt ${input_hint}'."
+            exit 1
+          fi
+          echo "✅ requirements.txt hashes are in sync."
+
+      - name: Run tests
+        shell: bash
+        run: python -m pytest scripts/tests/ -v
+
+
+  scorecard:
+    name: OSSF Scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: scorecard-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a  # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13  # v4.35.1
+        with:
+          sarif_file: results.sarif
+
+  ci-summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always() && github.event_name == 'pull_request'
+    needs:
+      - static-checks
+      - validate-actions
+      - pin-checker
+      - breaking-change-guard
+      - dependency-review
+      - secret-scan
+      - git-auth-cleanup
+      - python-tests
+      - scorecard
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Post CI summary comment
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
+        with:
+          script: |
+            const script = require('./scripts/ci-summary.js');
+            await script({ github, context, core, needs: ${{ toJSON(needs) }} });

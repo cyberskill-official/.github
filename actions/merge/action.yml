@@ -1,0 +1,93 @@
+---
+name: 🔀 Merge
+description: This action merges a source branch into the target branch
+inputs:
+  GH_TOKEN:
+    description: GitHub token for authentication
+    required: true
+  FROM:
+    description: The branch to merge from
+    required: true
+  TO:
+    description: The branch to merge into
+    required: true
+  CHOOSE_STRATEGY:
+    description: The strategy to use for the merge
+    required: false
+    default: "theirs"
+  ALLOW_UNRELATED:
+    description: "Allow merging unrelated histories (default: false)"
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Git & Auth
+      # ⚠️ INTENTIONAL: Uses @main — see actions/lint/action.yml for rationale
+      uses: cyberskill-official/.github/actions/git-auth@d2ae633240d05d94a798e6a792cae4d0edfb4655  # main
+      with:
+        GH_TOKEN: ${{ inputs.GH_TOKEN }}
+
+    - name: Merge and Push
+      shell: bash
+      env:
+        FROM_BRANCH: ${{ inputs.FROM }}
+        TO_BRANCH: ${{ inputs.TO }}
+        STRATEGY: ${{ inputs.CHOOSE_STRATEGY }}
+        ALLOW_UNRELATED: ${{ inputs.ALLOW_UNRELATED }}
+      run: |
+        set -euo pipefail
+
+        # Source shared validation
+        # shellcheck source=/dev/null
+        source "${{ github.action_path }}/../../scripts/validate-branch.sh"
+        # shellcheck source=/dev/null
+        source "${{ github.action_path }}/../../scripts/lib/helpers.sh"
+
+        validate_branch "FROM" "$FROM_BRANCH"
+        validate_branch "TO" "$TO_BRANCH"
+
+        # Validate merge strategy
+        VALID_STRATEGIES="theirs ours patience renormalize no-renormalize"
+        if ! validate_allows_list "$STRATEGY" "$VALID_STRATEGIES" "merge strategy" > /dev/null 2>&1; then
+          # Also allow parameterized strategies
+          valid=false
+          if [[ "$STRATEGY" =~ ^find-renames(=[0-9]+)?$ ]]; then valid=true; fi
+          if [[ "$STRATEGY" =~ ^diff-algorithm=[a-z]+$ ]]; then valid=true; fi
+          if [[ "$STRATEGY" =~ ^subtree(=[a-zA-Z0-9/._-]+)?$ ]]; then valid=true; fi
+          if [[ "$valid" != "true" ]]; then
+            echo "❌ Invalid merge strategy: '$STRATEGY'. Allowed: $VALID_STRATEGIES, find-renames[=N], diff-algorithm=ALG, subtree[=PATH]" >&2
+            exit 1
+          fi
+        fi
+
+        # ⚡ Bolt: Fetch both branches in a single command to save a network round-trip
+        git fetch origin "$FROM_BRANCH" "$TO_BRANCH" || {
+          echo "❌ Branch $FROM_BRANCH or $TO_BRANCH not found"; exit 1;
+        }
+
+        git checkout "$TO_BRANCH"
+        git reset --hard "origin/$TO_BRANCH"
+
+        MERGE_ARGS=("origin/$FROM_BRANCH" -X "$STRATEGY" -m "Merge $FROM_BRANCH into $TO_BRANCH")
+        if [ "$ALLOW_UNRELATED" = "true" ]; then
+          MERGE_ARGS+=(--allow-unrelated-histories)
+        fi
+
+        echo "Merging $FROM_BRANCH into $TO_BRANCH with strategy: $STRATEGY"
+        git merge "${MERGE_ARGS[@]}" || {
+          echo "❌ Merge failed due to conflicts. Aborting..."
+          git merge --abort 2>/dev/null || true
+          exit 1
+        }
+
+        git push origin "HEAD:refs/heads/$TO_BRANCH"
+        echo "✅ Merged. New HEAD: $(git rev-parse HEAD)"
+
+    - name: Cleanup Git auth
+      if: always()
+      shell: bash
+      run: |
+        git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+        git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+        git remote set-url origin "https://github.com/${{ github.repository }}.git" 2>/dev/null || true

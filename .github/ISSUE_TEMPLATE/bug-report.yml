@@ -1,0 +1,125 @@
+---
+name: Bug Report 🐛
+description: Let us know what's broken so we can fix it!
+title: "[BUG] - "
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What's going wrong? Be specific and paint a clear picture.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Help us break it so we can fix it!
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How bad is it?
+      options:
+        - Critical (System down, data loss)
+        - High (Major functionality broken)
+        - Medium (Minor functionality broken)
+        - Low (Cosmetic, annoyance)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Frequency
+      description: How often does it happen?
+      options:
+        - Always
+        - Intermittent
+        - Once
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: e.g. Windows 11, macOS Sonoma, Ubuntu 24.04
+    validations:
+      required: false
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / Version
+      placeholder: e.g. Chrome 120, Firefox 121, Safari 17
+    validations:
+      required: false
+
+  - type: input
+    id: dependencies
+    attributes:
+      label: Dependencies / Tools
+      placeholder: e.g. Node.js v24, pnpm 10, Rust 1.85
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste any relevant logs or stack traces here.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Possible Solution
+      description: "Optional: Suggested fix or workaround."
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or Videos
+      description: A picture/video is worth a thousand words — show us what's wrong!
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate.
+          required: true
+        - label: I have filled out all relevant sections of this form.
+          required: true

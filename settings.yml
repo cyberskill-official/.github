@@ -1,0 +1,44 @@
+---
+# Organization-wide tag protection rulesets applied via probot/settings.
+# These rules prevent accidental tag deletion/overwrite and enforce SemVer naming.
+#
+# Actor IDs reference:
+#   Roles: 4=Write, 5=Maintain, 6=Admin
+#   Apps:  GET /orgs/{org}/installations → "app_id"
+#   Docs:  https://docs.github.com/en/rest/orgs/rules
+rulesets:
+  - name: Tags
+    target: tag
+    enforcement: active
+    bypass_actors:
+      # actor_id: null = all actors of this type (not a specific actor)
+      - actor_id: null
+        actor_type: OrganizationAdmin
+        bypass_mode: always
+      - actor_id: null
+        actor_type: DeployKey
+        bypass_mode: always
+      - actor_id: 5
+        actor_type: RepositoryRole  # Maintainer role
+        bypass_mode: always
+      - actor_id: 2740
+        actor_type: Integration  # semantic-release
+        bypass_mode: always
+      - actor_id: 29110
+        actor_type: Integration  # Renovate
+        bypass_mode: always
+    conditions:
+      ref_name:
+        include: ["~ALL"]
+      repository_name:
+        include: ["~ALL"]
+    rules:
+      - type: deletion
+      - type: non_fast_forward
+      - type: tag_name_pattern
+        parameters:
+          operator: regex
+          pattern: |-
+            "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$"
+          name: Ensure tag names use semantic versioning
+          negate: false

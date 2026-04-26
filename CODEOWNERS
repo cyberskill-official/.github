@@ -1,0 +1,21 @@
+# Default owners for the entire .github org repo
+* @cyberskill-official/core
+
+# Reusable Actions
+/actions/ @cyberskill-official/core
+
+# CI/CD Workflows
+/.github/workflows/ @cyberskill-official/core
+
+# Documentation
+/docs/ @cyberskill-official/core
+
+# Scripts
+/scripts/ @cyberskill-official/core
+
+# Branch & Tag Rulesets
+/settings.yml @cyberskill-official/core
+
+# Dependency management
+/renovate.json @cyberskill-official/core
+

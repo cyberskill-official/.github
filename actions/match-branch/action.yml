@@ -1,0 +1,29 @@
+---
+name: 🔍 Match Branch
+description: This action checks if the current branch matches the target branch and sets an output.
+inputs:
+  BRANCH:
+    description: Branch to check against
+    required: true
+outputs:
+  matched:
+    description: "'true' if the current branch matches the target branch, 'false' otherwise"
+    value: ${{ steps.check.outputs.matched }}
+runs:
+  using: "composite"
+  steps:
+    - name: Check if branch matches the target branch
+      id: check
+      shell: bash
+      env:
+        TARGET_BRANCH: ${{ inputs.BRANCH }}
+        CURRENT_BRANCH: ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+        if [ "$CURRENT_BRANCH" != "$TARGET_BRANCH" ]; then
+          echo "Not on '$TARGET_BRANCH' branch (current: '$CURRENT_BRANCH'). Skipping."
+          echo "matched=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "On '$TARGET_BRANCH' branch. Continuing."
+          echo "matched=true" >> "$GITHUB_OUTPUT"
+        fi

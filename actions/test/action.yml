@@ -1,0 +1,76 @@
+---
+name: 🧪 Test
+description: This action runs the project's test suite with optional coverage upload.
+inputs:
+  COVERAGE:
+    description: Whether to upload coverage artifacts
+    required: false
+    default: "false"
+  COVERAGE_ARTIFACT_NAME:
+    description: Name of the coverage artifact
+    required: false
+    default: "coverage"
+  COVERAGE_THRESHOLD:
+    description: "Minimum coverage percentage to pass (e.g., '80'). Requires a coverage/coverage-summary.json file. Leave empty to skip."
+    required: false
+    default: ""
+  RETENTION_DAYS:
+    description: Number of days to retain the coverage artifact
+    required: false
+    default: "7"
+runs:
+  using: "composite"
+  steps:
+    - name: Run tests
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "${PM_RUN:-}" ]]; then
+          echo "::error::PM_RUN is not set. Run the 'env-deps' action before 'test'."
+          exit 1
+        fi
+        # shellcheck disable=SC2086
+        ${{ env.PM_RUN }} --if-present test
+
+    - name: Check coverage threshold
+      if: ${{ inputs.COVERAGE_THRESHOLD != '' }}
+      shell: bash
+      env:
+        THRESHOLD: ${{ inputs.COVERAGE_THRESHOLD }}
+      run: |
+        set -euo pipefail
+        SUMMARY="coverage/coverage-summary.json"
+        if [ ! -f "$SUMMARY" ]; then
+          echo "::warning::Coverage summary not found at $SUMMARY. Skipping threshold check."
+          exit 0
+        fi
+        if ! [[ "$THRESHOLD" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]; then
+          echo "::error::Invalid COVERAGE_THRESHOLD '$THRESHOLD'. Expected a numeric percentage between 0 and 100."
+          exit 1
+        fi
+        if ! awk -v thresh="$THRESHOLD" 'BEGIN{exit (thresh >= 0 && thresh <= 100 ? 0 : 1)}'; then
+          echo "::error::Invalid COVERAGE_THRESHOLD '$THRESHOLD'. Expected a numeric percentage between 0 and 100."
+          exit 1
+        fi
+        FAILED=0
+        for METRIC in lines branches functions statements; do
+          ACTUAL=$(jq -r ".total.$METRIC.pct // 0" "$SUMMARY" 2>/dev/null || echo "0")
+          echo "📊 $METRIC: ${ACTUAL}% (threshold: ${THRESHOLD}%)"
+          if ! awk -v actual="$ACTUAL" -v thresh="$THRESHOLD" 'BEGIN{exit (actual+0 >= thresh ? 0 : 1)}' 2>/dev/null; then
+            echo "::error::Coverage for $METRIC (${ACTUAL}%) is below threshold ${THRESHOLD}%"
+            FAILED=$((FAILED + 1))
+          fi
+        done
+        if [ "$FAILED" -gt 0 ]; then
+          echo "::error::$FAILED coverage metric(s) below threshold."
+          exit 1
+        fi
+        echo "✅ All coverage metrics meet threshold."
+
+    - name: Upload coverage
+      if: ${{ inputs.COVERAGE == 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: ${{ inputs.COVERAGE_ARTIFACT_NAME }}
+        path: coverage
+        retention-days: ${{ inputs.RETENTION_DAYS }}

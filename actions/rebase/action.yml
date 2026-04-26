@@ -1,0 +1,72 @@
+---
+name: 🔀 Rebase
+description: This action rebases a source branch onto the target branch
+inputs:
+  GH_TOKEN:
+    description: GitHub token for authentication
+    required: true
+  FROM:
+    description: The branch to rebase from
+    required: true
+  TO:
+    description: The branch to rebase into
+    required: true
+  DRY_RUN:
+    description: "If 'true', only shows what would happen without actually pushing"
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Git & Auth
+      # ⚠️ INTENTIONAL: Uses @main — see actions/lint/action.yml for rationale
+      uses: cyberskill-official/.github/actions/git-auth@d2ae633240d05d94a798e6a792cae4d0edfb4655  # main
+      with:
+        GH_TOKEN: ${{ inputs.GH_TOKEN }}
+
+    - name: Rebase and Push
+      shell: bash
+      env:
+        FROM: ${{ inputs.FROM }}
+        TO: ${{ inputs.TO }}
+        DRY_RUN: ${{ inputs.DRY_RUN }}
+      run: |
+        set -euo pipefail
+
+        # Source shared validation
+        # shellcheck source=/dev/null
+        source "${{ github.action_path }}/../../scripts/validate-branch.sh"
+
+        validate_branch "FROM" "$FROM"
+        validate_branch "TO" "$TO"
+
+        # ⚡ Bolt: Fetch both branches in a single command to save a network round-trip
+        git fetch origin "$FROM" "$TO" || {
+          echo "❌ Branch $FROM or $TO not found"; exit 1;
+        }
+
+        git checkout "$TO"
+        git reset --hard "origin/$TO"
+
+        git rebase "origin/$FROM" || {
+          echo "❌ Rebase failed due to conflicts. Aborting..."
+          git rebase --abort
+          exit 1
+        }
+
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "🔍 DRY RUN: Would push $TO with force-with-lease"
+          git push origin "$TO" --force-with-lease --dry-run
+          echo "✅ Dry run complete. HEAD: $(git rev-parse HEAD)"
+        else
+          git push origin "$TO" --force-with-lease
+          echo "✅ Rebased. New HEAD: $(git rev-parse HEAD)"
+        fi
+
+    - name: Cleanup Git auth
+      if: always()
+      shell: bash
+      run: |
+        git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+        git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+        git remote set-url origin "https://github.com/${{ github.repository }}.git" 2>/dev/null || true

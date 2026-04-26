@@ -1,0 +1,121 @@
+---
+name: 🛡️ Security Audit
+description: This action runs a security audit on project dependencies.
+inputs:
+  AUDIT_LEVEL:
+    description: Minimum vulnerability level to fail on (low, moderate, high, critical)
+    required: false
+    default: "high"
+  OUTPUT_FORMAT:
+    description: Output format for audit results (text, json). When 'json', results are saved as an artifact.
+    required: false
+    default: "text"
+  OUTPUT_ARTIFACT:
+    description: Name of the artifact to upload audit results to (only used when OUTPUT_FORMAT is 'json')
+    required: false
+    default: "security-audit-report"
+  RETENTION_DAYS:
+    description: Number of days to retain the audit artifact
+    required: false
+    default: "30"
+runs:
+  using: "composite"
+  steps:
+    - name: Run security audit
+      shell: bash
+      env:
+        AUDIT_LEVEL: ${{ inputs.AUDIT_LEVEL }}
+        OUTPUT_FORMAT: ${{ inputs.OUTPUT_FORMAT }}
+      run: |
+        set -euo pipefail
+        # Validate AUDIT_LEVEL against known values
+        VALID_LEVELS="low moderate high critical"
+        valid_level=false
+        for l in $VALID_LEVELS; do
+          if [[ "$AUDIT_LEVEL" == "$l" ]]; then valid_level=true; break; fi
+        done
+        if [[ "$valid_level" != "true" ]]; then
+          echo "::error::Invalid AUDIT_LEVEL: '$AUDIT_LEVEL'. Must be one of: $VALID_LEVELS"
+          exit 1
+        fi
+
+        # Validate OUTPUT_FORMAT against known values
+        case "$OUTPUT_FORMAT" in
+          text|json) ;;
+          *)
+            echo "::error::Invalid OUTPUT_FORMAT: '$OUTPUT_FORMAT'. Must be one of: text, json"
+            exit 1
+            ;;
+        esac
+
+        # Detect package manager (from env-deps action or fallback)
+        PM="${PACKAGE_MANAGER:-pnpm}"
+        echo "Using package manager: $PM"
+
+        AUDIT_EXIT=0
+        case "$PM" in
+          npm)
+            if [ "$OUTPUT_FORMAT" = "json" ]; then
+              npm audit --audit-level="$AUDIT_LEVEL" --json > audit-report.json || AUDIT_EXIT=$?
+            else
+              npm audit --audit-level="$AUDIT_LEVEL" || AUDIT_EXIT=$?
+            fi
+            ;;
+          pnpm)
+            if [ "$OUTPUT_FORMAT" = "json" ]; then
+              pnpm audit --audit-level="$AUDIT_LEVEL" --json > audit-report.json || AUDIT_EXIT=$?
+            else
+              pnpm audit --audit-level="$AUDIT_LEVEL" || AUDIT_EXIT=$?
+            fi
+            ;;
+          yarn)
+            # yarn audit uses different severity levels and flags
+            YARN_LEVEL="$AUDIT_LEVEL"
+            if [ "$AUDIT_LEVEL" = "high" ]; then YARN_LEVEL="high"; fi
+            if [ "$OUTPUT_FORMAT" = "json" ]; then
+              yarn audit --level "$YARN_LEVEL" --json > audit-report.json || AUDIT_EXIT=$?
+            else
+              yarn audit --level "$YARN_LEVEL" || AUDIT_EXIT=$?
+            fi
+            ;;
+          *)
+            echo "::error::Unsupported package manager: '$PM'. Supported: npm, pnpm, yarn"
+            exit 1
+            ;;
+        esac
+
+        if [ "$OUTPUT_FORMAT" = "json" ]; then
+          echo "📋 Audit report saved to audit-report.json"
+          if [ -f audit-report.json ]; then
+            case "$PM" in
+              pnpm|npm)
+                VULN_COUNT=$(jq '[.metadata.vulnerabilities | to_entries[].value] | add // 0' audit-report.json 2>/dev/null) || {
+                  echo "::warning::Could not parse audit report summary"
+                  VULN_COUNT="unknown"
+                }
+                ;;
+              yarn)
+                # yarn audit --json outputs JSON lines; extract count from the auditSummary event
+                VULN_COUNT=$(grep -m1 '"auditSummary"' audit-report.json 2>/dev/null \
+                  | jq '[.data.vulnerabilities | to_entries[].value | numbers] | add // 0' 2>/dev/null) || {
+                  echo "::warning::Could not parse yarn audit report summary"
+                  VULN_COUNT="unknown"
+                }
+                ;;
+              *)
+                VULN_COUNT="unknown"
+                ;;
+            esac
+            echo "Found: $VULN_COUNT vulnerabilities"
+          fi
+        fi
+        exit "$AUDIT_EXIT"
+
+    - name: Upload audit report
+      if: ${{ always() && inputs.OUTPUT_FORMAT == 'json' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: ${{ inputs.OUTPUT_ARTIFACT }}
+        path: audit-report.json
+        retention-days: ${{ inputs.RETENTION_DAYS }}
+        if-no-files-found: warn

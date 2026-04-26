@@ -1,0 +1,139 @@
+---
+name: 🚀 Deploy
+description: This action deploys the project to a server using SSH and restarts the PM2 app.
+inputs:
+  HOST:
+    description: The host of the server to deploy to
+    required: true
+  PORT:
+    description: The port to connect to the server
+    required: true
+    default: "22"
+  USERNAME:
+    description: The username to connect to the server
+    required: true
+  PASSWORD:
+    description: The password to connect to the server
+    required: false
+  KEY:
+    description: The private key to connect to the server
+    required: false
+  PASSPHRASE:
+    description: The passphrase for the private key
+    required: false
+  PATH:
+    description: The path to the project on the server
+    required: true
+  BRANCH:
+    description: The branch to deploy from
+    required: true
+  APP_NAME:
+    description: >
+      PM2 app name for targeted health check. Strongly recommended — without this,
+      the check counts ANY online PM2 process, which may mask a crashed deployment.
+    required: false
+  HEALTH_CHECK_RETRIES:
+    description: Number of health check retry attempts
+    required: false
+    default: "5"
+  HEALTH_CHECK_INTERVAL:
+    description: Seconds to wait between health check retries
+    required: false
+    default: "3"
+  BUILD_COMMAND:
+    description: >
+      Command to install deps and build the project (runs on remote server).
+      Validation rules: Only allowed base commands: pnpm, npm, yarn, bun, pm2,
+      node, npx, make, docker. Chain with &&. Forbidden characters: quotes (' "),
+      dollar signs ($), semicolons (;), pipes (|), backticks (`), heredocs (<<),
+      and process substitution (<( )>()). Newlines are also rejected.
+    required: false
+    default: "pnpm install --frozen-lockfile && pnpm build"
+  RELOAD_COMMAND:
+    description: >
+      Command to reload the application after build (runs on remote server).
+      Same validation rules as BUILD_COMMAND: only allowed base commands
+      (pnpm, npm, yarn, bun, pm2, node, npx, make, docker), chain with &&,
+      no quotes/$/;/|/`/<</<(/>( characters allowed.
+    required: false
+    default: "pm2 startOrReload ecosystem.config.cjs --update-env && pm2 save"
+  ALLOWED_DEPLOY_PATHS:
+    description: >
+      Comma-separated list of allowed deploy path prefixes.
+      DEPLOY_PATH is resolved via realpath and must be a subdirectory
+      of one of these prefixes. Path traversal (..) is rejected.
+      Example: '/home,/var/www,/srv'
+    required: false
+    default: "/home,/var/www,/srv"
+runs:
+  using: "composite"
+  steps:
+    - name: Validate authentication credentials
+      shell: bash
+      env:
+        _AUTH_PASSWORD: ${{ inputs.PASSWORD }}
+        _AUTH_KEY: ${{ inputs.KEY }}
+      run: |
+        if [[ -z "$_AUTH_PASSWORD" && -z "$_AUTH_KEY" ]]; then
+          echo "::error::At least one authentication mechanism (PASSWORD or KEY) must be provided."
+          exit 1
+        fi
+
+    - name: Prepare deployment scripts
+      shell: bash
+      run: |
+        mkdir -p ./.cyberskill-deploy-tmp
+        cp -R "${{ github.action_path }}/../../scripts" ./.cyberskill-deploy-tmp/
+
+    - name: Push deployment scripts
+      uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634  # v0.1.7
+      with:
+        host: ${{ inputs.HOST }}
+        port: ${{ inputs.PORT }}
+        username: ${{ inputs.USERNAME }}
+        password: ${{ inputs.PASSWORD }}
+        key: ${{ inputs.KEY }}
+        passphrase: ${{ inputs.PASSPHRASE }}
+        source: ".cyberskill-deploy-tmp/scripts"
+        target: "/tmp/.cyberskill-deploy-${{ github.run_id }}"
+        strip_components: 1
+
+    - name: Deploy to server
+      id: deploy
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2  # v1.2.5
+      env:
+        DEPLOY_PATH: ${{ inputs.PATH }}
+        DEPLOY_BRANCH: ${{ inputs.BRANCH }}
+        DEPLOY_APP_NAME: ${{ inputs.APP_NAME }}
+        HEALTH_RETRIES: ${{ inputs.HEALTH_CHECK_RETRIES }}
+        HEALTH_INTERVAL: ${{ inputs.HEALTH_CHECK_INTERVAL }}
+        BUILD_CMD: ${{ inputs.BUILD_COMMAND }}
+        ALLOWED_PATHS: ${{ inputs.ALLOWED_DEPLOY_PATHS }}
+        RELOAD_CMD: ${{ inputs.RELOAD_COMMAND }}
+      with:
+        host: ${{ inputs.HOST }}
+        port: ${{ inputs.PORT }}
+        username: ${{ inputs.USERNAME }}
+        password: ${{ inputs.PASSWORD }}
+        key: ${{ inputs.KEY }}
+        passphrase: ${{ inputs.PASSPHRASE }}
+        envs: DEPLOY_PATH,DEPLOY_BRANCH,DEPLOY_APP_NAME,HEALTH_RETRIES,HEALTH_INTERVAL,BUILD_CMD,RELOAD_CMD,ALLOWED_PATHS
+        script: |
+          set -euo pipefail
+          # Pre-load profile if required
+          if [ -f ~/.profile ]; then source ~/.profile; fi
+          if [ -f ~/.nvm/nvm.sh ]; then source ~/.nvm/nvm.sh || true; fi
+
+          # Call the packaged python CLI
+          python3 /tmp/.cyberskill-deploy-${{ github.run_id }}/scripts/cli.py deploy \
+            --path "$DEPLOY_PATH" \
+            --branch "$DEPLOY_BRANCH" \
+            --cmd "$BUILD_CMD" \
+            --reload "$RELOAD_CMD" \
+            --retries "$HEALTH_RETRIES" \
+            --interval "$HEALTH_INTERVAL" \
+            --allowed-paths "$ALLOWED_PATHS" \
+            ${DEPLOY_APP_NAME:+--app-name "$DEPLOY_APP_NAME"}
+
+          # Clean up
+          rm -rf /tmp/.cyberskill-deploy-${{ github.run_id }}

@@ -1,0 +1,26 @@
+# Pre-commit hooks for CyberSkill .github repository.
+# Install: pip install pre-commit && pre-commit install
+# Run all: pre-commit run --all-files
+# See: https://pre-commit.com
+---
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.8
+    hooks:
+      - id: ruff
+        args: [check, --fix]
+        files: ^scripts/
+      - id: ruff-format
+        files: ^scripts/
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint]
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        files: ^scripts/.*\.sh$

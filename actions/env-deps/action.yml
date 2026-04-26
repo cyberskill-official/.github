@@ -1,0 +1,111 @@
+---
+name: 🔧 Env & Deps
+description: This action sets up the environment and installs dependencies for the CI pipeline.
+inputs:
+  NODE_VERSION:
+    description: Node.js version to use
+    required: false
+    default: "24.14.0"
+  PNPM_VERSION:
+    description: pnpm version to use
+    required: false
+    default: "10.29.3"
+  PACKAGE_MANAGER:
+    description: "Package manager to use (pnpm, npm, yarn). Auto-detected if empty."
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Detect Package Manager
+      shell: bash
+      id: detect
+      env:
+        PM_INPUT: ${{ inputs.PACKAGE_MANAGER }}
+      run: |
+        set -euo pipefail
+        pm="$PM_INPUT"
+        if [ -z "$pm" ]; then
+          if [ -f "pnpm-lock.yaml" ]; then pm="pnpm"
+          elif [ -f "yarn.lock" ]; then pm="yarn"
+          elif [ -f "package-lock.json" ]; then pm="npm"
+          else pm="pnpm"; fi
+        else
+          # Reject injection characters (newlines, carriage returns, percent signs)
+          if [[ "$pm" =~ $'\n' ]] || [[ "$pm" =~ $'\r' ]] || [[ "$pm" == *'%'* ]]; then
+            echo "::error::PACKAGE_MANAGER contains invalid characters" >&2
+            exit 1
+          fi
+          # Validate against strict allowlist
+          case "$pm" in
+            pnpm|npm|yarn) ;;
+            *)
+              echo "::error::PACKAGE_MANAGER must be one of: pnpm, npm, yarn (got: '$pm')" >&2
+              exit 1
+              ;;
+          esac
+        fi
+        echo "PACKAGE_MANAGER=$pm" >> "$GITHUB_ENV"
+        if [ "$pm" = "pnpm" ]; then
+          echo "PM_RUN=pnpm run" >> "$GITHUB_ENV"
+          echo "PM_INSTALL=pnpm install --frozen-lockfile" >> "$GITHUB_ENV"
+        elif [ "$pm" = "yarn" ]; then
+          echo "PM_RUN=yarn" >> "$GITHUB_ENV"
+          echo "PM_INSTALL=yarn install --frozen-lockfile" >> "$GITHUB_ENV"
+        else
+          echo "PM_RUN=npm run" >> "$GITHUB_ENV"
+          echo "PM_INSTALL=npm ci" >> "$GITHUB_ENV"
+        fi
+
+    - name: Setup pnpm
+      if: env.PACKAGE_MANAGER == 'pnpm'
+      uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      with:
+        version: ${{ inputs.PNPM_VERSION }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+      with:
+        node-version: ${{ inputs.NODE_VERSION }}
+        cache: ${{ env.PACKAGE_MANAGER }}
+
+    - name: Setup environment variables
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -f ".env.example" ]; then
+          SECRET_PATTERNS='(sk_live_[0-9a-zA-Z]{20,}|sk_test_[0-9a-zA-Z]{20,}|ghp_[0-9a-zA-Z]{36}|gho_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59}|AKIA[0-9A-Z]{16}|xoxb-[0-9a-zA-Z-]+|xoxp-[0-9a-zA-Z-]+|SG\.[0-9a-zA-Z_-]{22}\.[0-9a-zA-Z_-]{43}|sk-[0-9a-zA-Z]{32,}|eyJ[0-9a-zA-Z_-]{10,}\.eyJ[0-9a-zA-Z_-]{10,}|sk-ant-[0-9a-zA-Z_-]{80,}|AIza[0-9A-Za-z_-]{35}|DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{44,}|AC[0-9a-f]{32}|[0-9a-f]{32,}-us[0-9]+)'
+          CREDENTIAL_KV='(password|secret|private_key|api_key|access_key)=.+'
+          PLACEHOLDER_EXCLUDES='(changeme|your[-_]|xxx|placeholder|example|TODO|REPLACE)'
+          if grep -qEi "$SECRET_PATTERNS" .env.example 2>/dev/null; then
+            echo "::error::.env.example appears to contain real secrets! Review and remove them before committing."
+            exit 1
+          fi
+          if grep -qEi "$CREDENTIAL_KV" .env.example 2>/dev/null; then
+            HAS_REAL_CREDS=false
+            while IFS= read -r cred_line; do
+              if ! echo "$cred_line" | grep -qEi "$PLACEHOLDER_EXCLUDES"; then
+                HAS_REAL_CREDS=true
+                echo "::warning::Suspicious credential line: $cred_line"
+              fi
+            done < <(grep -Ei "$CREDENTIAL_KV" .env.example 2>/dev/null)
+            if [ "$HAS_REAL_CREDS" = "true" ]; then
+              echo "::warning::.env.example contains credential-like key=value pairs that don't look like placeholders. Verify they are safe."
+            fi
+          fi
+          cp .env.example .env
+          echo "✅ Copied .env.example → .env (no secret patterns detected)."
+        else
+          echo ".env.example not found. Skipping."
+        fi
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "${PM_INSTALL:-}" ]]; then
+          echo "::error::PM_INSTALL is not set. The 'Detect Package Manager' step may have failed."
+          exit 1
+        fi
+        # shellcheck disable=SC2086
+        ${{ env.PM_INSTALL }}

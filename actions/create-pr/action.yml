@@ -1,0 +1,100 @@
+---
+name: 📜 Create PR
+description: This action creates a pull request from the source branch to the target branch
+inputs:
+  GH_TOKEN:
+    description: GitHub token for authentication
+    required: true
+  FROM:
+    description: The source branch
+    required: true
+  TO:
+    description: The target branch
+    required: true
+  TITLE:
+    description: Pull Request Title
+    required: false
+    default: "chore(CI): sync changes"
+  BODY:
+    description: Pull Request Body
+    required: false
+    default: "This PR syncs the latest changes."
+  SKIP_CHECKOUT:
+    description: "Skip the checkout step if the repo is already checked out (default: false)"
+    required: false
+    default: "false"
+  LABELS:
+    description: "Comma-separated labels to apply to the PR (e.g., 'bug,enhancement')"
+    required: false
+    default: ""
+  ASSIGNEES:
+    description: "Comma-separated GitHub usernames to assign to the PR (e.g., 'user1,user2')"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      if: ${{ inputs.SKIP_CHECKOUT != 'true' }}
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      with:
+        persist-credentials: false
+
+    # Uses GH_TOKEN as env var for gh CLI — no token-embedded URL auth needed (no git push operations).
+    # Unlike merge/rebase, this action only calls `gh pr create` which handles auth via env.
+    - name: Create Pull Request
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.GH_TOKEN }}
+        PR_BASE: ${{ inputs.TO }}
+        PR_HEAD: ${{ inputs.FROM }}
+        PR_TITLE: ${{ inputs.TITLE }}
+        PR_BODY: ${{ inputs.BODY }}
+        PR_LABELS: ${{ inputs.LABELS }}
+        PR_ASSIGNEES: ${{ inputs.ASSIGNEES }}
+      run: |
+        set -euo pipefail
+
+        # Source shared validation
+        # shellcheck source=/dev/null
+        source "${{ github.action_path }}/../../scripts/validate-branch.sh"
+        # shellcheck source=/dev/null
+        source "${{ github.action_path }}/../../scripts/lib/helpers.sh"
+
+        validate_branch "FROM" "$PR_HEAD"
+        validate_branch "TO" "$PR_BASE"
+
+        if ! retry_with_backoff 3 2 gh pr list --base "$PR_BASE" --head "$PR_HEAD" --state open --json number -q '.[0].number' > /tmp/existing_pr.txt 2>/dev/null; then
+          echo "::warning::Failed to check existing PRs. Skipping idempotency check."
+          existing=""
+        else
+          existing=$(tr -d '[:space:]' < /tmp/existing_pr.txt || true)
+        fi
+        # Treat as an existing PR only if the captured value is a purely numeric PR number.
+        if [[ "$existing" =~ ^[0-9]+$ ]]; then
+          echo "ℹ️ PR #$existing already exists ($PR_HEAD → $PR_BASE). Skipping."
+          exit 0
+        fi
+        # Note: Empty array expansion "${EXTRA_ARGS[@]}" is safe in Bash >= 4.4 (Ubuntu runners use 5.x).
+        # For older Bash, use ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} instead.
+        EXTRA_ARGS=()
+        if [ -n "$PR_LABELS" ]; then
+          split_csv "$PR_LABELS" LABEL_LIST
+          for label in "${LABEL_LIST[@]}"; do
+            label=$(trim "$label")
+            [ -n "$label" ] && EXTRA_ARGS+=(--label "$label")
+          done
+        fi
+        if [ -n "$PR_ASSIGNEES" ]; then
+          split_csv "$PR_ASSIGNEES" ASSIGNEE_LIST
+          for assignee in "${ASSIGNEE_LIST[@]}"; do
+            assignee=$(trim "$assignee")
+            [ -n "$assignee" ] && EXTRA_ARGS+=(--assignee "$assignee")
+          done
+        fi
+        gh pr create \
+          --base "$PR_BASE" \
+          --head "$PR_HEAD" \
+          --title "$PR_TITLE" \
+          --body "$PR_BODY" \
+          "${EXTRA_ARGS[@]}"

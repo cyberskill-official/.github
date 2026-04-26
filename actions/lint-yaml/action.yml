@@ -1,0 +1,13 @@
+---
+name: "🛠️ Lint YAML"
+description: "Lints YAML files using yamllint"
+runs:
+  using: "composite"
+  steps:
+    - name: Lint YAML files
+      shell: bash
+      run: |
+        set -euo pipefail
+        # §6.1 — Use pipx (pre-installed on GitHub-hosted runners) for faster
+        # yamllint execution without setup-python + pip install overhead.
+        pipx run yamllint==1.38.0 -c "${{ github.action_path }}/../../.yamllint" .

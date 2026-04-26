@@ -1,0 +1,25 @@
+{
+    "timezone": "Asia/Ho_Chi_Minh",
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "extends": [
+        "config:best-practices",
+        "group:allApollographql",
+        "group:allDigest",
+        "group:allNonMajor"
+    ],
+    "ignoreDeps": [
+        "node"
+    ],
+    "rangeStrategy": "bump",
+    "labels": ["dependencies"],
+    "schedule": [
+        "before 8am on Monday"
+    ],
+    "automerge": true,
+    "automergeType": "pr",
+    "platformAutomerge": true,
+    "separateMajorMinor": true,
+    "major": {
+        "automerge": false
+    }
+}

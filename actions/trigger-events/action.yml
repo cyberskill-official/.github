@@ -1,0 +1,130 @@
+---
+name: 🔥 Trigger Events
+description: This action triggers multiple events for a single repository
+inputs:
+  GH_TOKEN:
+    description: GitHub token for authentication
+    required: true
+  REPO:
+    description: Repository to trigger events for
+    required: true
+  EVENTS:
+    description: Comma-separated list of event types to trigger (alphanumeric, hyphens, underscores only)
+    required: true
+  MAX_CONCURRENCY:
+    description: Maximum number of concurrent event dispatches
+    required: false
+    default: "10"
+runs:
+  using: "composite"
+  steps:
+    - name: Trigger events in the repository
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.GH_TOKEN }}
+        REPO: ${{ inputs.REPO }}
+        EVENTS: ${{ inputs.EVENTS }}
+        MAX_CONCURRENCY: ${{ inputs.MAX_CONCURRENCY }}
+      run: |
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "${{ github.action_path }}/../../scripts/lib/helpers.sh"
+        # Validate REPO format (must be owner/repo)
+        if [[ ! "$REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+          echo "::error::REPO must be in 'owner/repo' format, got: '$REPO'"
+          exit 1
+        fi
+
+        # Pre-flight: verify token has push access (dispatches requires contents:write or repo scope)
+        if ! gh api "repos/$REPO" --jq '.permissions.push' 2>/dev/null | grep -q 'true'; then
+          echo "::error::Token lacks push access to $REPO. Ensure GITHUB_TOKEN has 'contents: write' permission or use a PAT with 'repo' scope."
+          exit 1
+        fi
+
+        MAX_JOBS="$MAX_CONCURRENCY"
+        STATUS_DIR=$(mktemp -d)
+        trap 'rm -rf "$STATUS_DIR"' EXIT
+
+        # Check Bash version for 'wait -n' concurrency support
+        HAS_WAIT_N=true
+        if [[ "${BASH_VERSINFO[0]}" -lt 4 ]] || { [[ "${BASH_VERSINFO[0]}" -eq 4 ]] && [[ "${BASH_VERSINFO[1]}" -lt 3 ]]; }; then
+          echo "::warning::Bash ${BASH_VERSION} does not support 'wait -n'. Events will be dispatched sequentially."
+          HAS_WAIT_N=false
+        fi
+
+        # Function to process a single event
+        trigger_event() {
+          local event="$1"
+          # Trim whitespace
+          local event_trimmed
+          event_trimmed=$(trim "$event")
+
+          if [[ -z "$event_trimmed" ]]; then
+            return
+          fi
+
+          # Validate event name format (alphanumeric, hyphens, underscores only)
+          if [[ ! "$event_trimmed" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::Invalid event name: '$event_trimmed'. Must match [a-zA-Z0-9_-]+"
+            # shellcheck disable=SC2001
+            safe_name=$(echo "$event_trimmed" | sed 's/[^a-zA-Z0-9_-]/_/g')
+            touch "$STATUS_DIR/$safe_name.failed"
+            return
+          fi
+
+          echo "Triggering event: $event_trimmed"
+
+          # Retry with exponential backoff for rate limits / transient errors
+          if retry_with_backoff 3 2 gh api "repos/$REPO/dispatches" \
+            --method POST \
+            --field "event_type=$event_trimmed"; then
+            echo "Finished event: $event_trimmed"
+          else
+            echo "Failed event: $event_trimmed (after 3 attempts)"
+            # Sanitize event name for safe filename (replace non-alphanumeric with _)
+            # shellcheck disable=SC2001
+            safe_name=$(echo "$event_trimmed" | sed 's/[^a-zA-Z0-9_-]/_/g')
+            touch "$STATUS_DIR/$safe_name.failed"
+          fi
+        }
+
+        # Parse events
+        split_csv "$EVENTS" EVENT_LIST
+
+        echo "Starting to trigger ${#EVENT_LIST[@]} events with max concurrency $MAX_JOBS..."
+
+        for event in "${EVENT_LIST[@]}"; do
+          if [ "$HAS_WAIT_N" = "true" ]; then
+            # Concurrency control: wait if we hit the limit.
+            # `wait -n` returns the exit code of the completed job, but we use
+            # file-based tracking ($STATUS_DIR/*.failed) as the authoritative
+            # error source, so we intentionally swallow the exit code here.
+            while (( $(jobs -r | wc -l) >= MAX_JOBS )); do
+              wait -n || true
+            done
+            trigger_event "$event" &
+          else
+            # Sequential fallback for Bash < 4.3
+            trigger_event "$event"
+          fi
+        done
+
+        # Wait for all background jobs to finish
+        wait
+
+        # ⚡ Bolt: Replace expensive find/basename subprocesses with native Bash parameter expansion
+        failures=()
+        for f in "$STATUS_DIR"/*.failed; do
+          if [ -f "$f" ]; then
+            base="${f##*/}"
+            failures+=("${base%.failed}")
+          fi
+        done
+        # Note: $STATUS_DIR cleanup is handled by the EXIT trap above
+
+        if [[ ${#failures[@]} -gt 0 ]]; then
+          echo "::error::The following events failed to trigger: ${failures[*]}"
+          exit 1
+        else
+          echo "All events triggered successfully."
+        fi

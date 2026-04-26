@@ -1,0 +1,8 @@
+# ShellCheck exclusions for standalone scripts
+# These apply to all shellcheck invocations in CI.
+#
+# SC1090: Cannot follow non-constant source (unavailable at lint time)
+# SC1091: Not following sourced file (unavailable at lint time)
+# SC2086: Allow word splitting where intended
+# SC2001: sed pattern replacement suggestion (not applicable to all use cases)
+disable=SC1090,SC1091,SC2086,SC2001
