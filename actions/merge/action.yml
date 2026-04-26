@@ -24,7 +24,7 @@ runs:
   steps:
     - name: Set up Git & Auth
       # ⚠️ INTENTIONAL: Uses @main — see actions/lint/action.yml for rationale
-      uses: cyberskill-official/.github/actions/git-auth@d2ae633240d05d94a798e6a792cae4d0edfb4655  # main
+      uses: cyberskill-official/.github/actions/git-auth@main  # main
       with:
         GH_TOKEN: ${{ inputs.GH_TOKEN }}
 

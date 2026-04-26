@@ -14,7 +14,7 @@ runs:
       # ⚠️ INTENTIONAL: Uses @main instead of SHA pin because this references
       # an action in the same repo — SHA pinning would require updating on every
       # commit. The CI pin-checker excludes cyberskill-official/.github/ refs.
-      uses: cyberskill-official/.github/actions/lint-yaml@d2ae633240d05d94a798e6a792cae4d0edfb4655  # main
+      uses: cyberskill-official/.github/actions/lint-yaml@main  # main
 
     - name: Run lint
       shell: bash
