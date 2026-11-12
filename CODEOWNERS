@@ -1,21 +1,21 @@
 # Default owners for the entire .github org repo
-* @cyberskill-official/core
+* @cyberskill-official/internal-products
 
 # Reusable Actions
-/actions/ @cyberskill-official/core
+/actions/ @cyberskill-official/internal-products
 
 # CI/CD Workflows
-/.github/workflows/ @cyberskill-official/core
+/.github/workflows/ @zintaen @Ryan-LT @Justin-CyberSkill
 
 # Documentation
-/docs/ @cyberskill-official/core
+/docs/ @cyberskill-official/internal-products
 
 # Scripts
-/scripts/ @cyberskill-official/core
+/scripts/ @cyberskill-official/internal-products
 
 # Branch & Tag Rulesets
-/settings.yml @cyberskill-official/core
+/settings.yml @zintaen @Ryan-LT @Justin-CyberSkill
 
 # Dependency management
-/renovate.json @cyberskill-official/core
+/renovate.json @cyberskill-official/internal-products
 
